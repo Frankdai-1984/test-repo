@@ -1,0 +1,38 @@
+name: 跑圈热点监控
+
+on:
+  schedule:
+    # 每日早8点运行（北京时间）
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  hot-topics-monitor:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置 Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: 安装依赖
+      run: |
+        pip install requests beautifulsoup4 feedparser
+    
+    - name: 运行热点监控脚本
+      env:
+        WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
+        ZHIHU_TOKEN: ${{ secrets.ZHIHU_TOKEN }}
+        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      run: |
+        python scripts/hot_topics_monitor.py
+    
+    - name: 提交更新
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add hot-topics/
+        git diff --staged --quiet || git commit -m "Update hot topics - $(date +%Y-%m-%d)"
+        git push
