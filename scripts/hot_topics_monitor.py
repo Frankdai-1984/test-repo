@@ -305,18 +305,31 @@ def main():
     
     # 飞书推送（如果配置了 webhook）
     feishu_webhook = os.environ.get('FEISHU_WEBHOOK', '')
-    if feishu_webhook and unique_topics:
+    print(f"[调试] FEISHU_WEBHOOK 是否配置: {'是' if feishu_webhook else '否'}")
+    
+    if feishu_webhook:
         try:
-            summary = f"今日跑圈热点：共 {len(unique_topics)} 条\n"
-            summary += "\n".join([f"• {t['title']}" for t in unique_topics[:5]])
+            if unique_topics:
+                summary = f"今日跑圈热点：共 {len(unique_topics)} 条\n"
+                summary += "\n".join([f"• {t['title']}" for t in unique_topics[:5]])
+            else:
+                summary = "今日跑圈热点监控完成\n未抓取到新的跑圈热点"
             
-            requests.post(feishu_webhook, json={
+            print(f"[调试] 正在推送到飞书...")
+            resp = requests.post(feishu_webhook, json={
                 "msg_type": "text",
                 "content": {"text": summary}
             }, timeout=10)
-            print("✅ 已推送至飞书")
+            print(f"[调试] 飞书响应: {resp.status_code} {resp.text}")
+            
+            if resp.status_code == 200:
+                print("✅ 已推送至飞书")
+            else:
+                print(f"⚠️ 飞书推送失败: HTTP {resp.status_code}")
         except Exception as e:
             print(f"⚠️ 飞书推送失败: {e}")
+    else:
+        print("[调试] 未配置 FEISHU_WEBHOOK，跳过推送")
 
 if __name__ == "__main__":
     main()
