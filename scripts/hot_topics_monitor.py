@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-跑圈热点监控脚本 V2.0
-监控平台：微博、知乎、抖音、小红书、百度、跑圈媒体
-输出格式：Markdown 摘要 + JSON 原始数据
-优化：增加关键词覆盖、增强反爬、多源聚合
+跑圈热点监控脚本 V3.0 - 可靠版
+使用网页抓取 + 多源聚合，绕过API反爬
 """
 
 import os
@@ -14,8 +12,9 @@ import time
 import requests
 from datetime import datetime
 from urllib.parse import quote
+from bs4 import BeautifulSoup
 
-# 跑步相关关键词（已大幅扩充）
+# 跑步相关关键词
 RUNNING_KEYWORDS = [
     '跑', '马拉松', '越野', '铁三', '铁人三项', '健身',
     '配速', '完赛', '跑步', '晨跑', '夜跑', '训练',
@@ -23,7 +22,9 @@ RUNNING_KEYWORDS = [
     '跑鞋', '碳板', '心率', '步频', 'PB', '破三', '破四',
     '中签', '报名', '赛事', '奖牌', '兔子', '关门',
     '受伤', '膝盖', '跟腱', '髂胫束', '撞墙',
-    '基普乔格', '大迫杰', '何杰', '张德顺', '夏雨雨'
+    '基普乔格', '大迫杰', '何杰', '张德顺', '夏雨雨',
+    '无锡马拉松', '北京马拉松', '上海马拉松', '广州马拉松',
+    '杭州马拉松', '厦门马拉松', '成都马拉松', '武汉马拉松'
 ]
 
 def contains_running_keyword(text):
@@ -33,274 +34,207 @@ def contains_running_keyword(text):
     return any(kw in text for kw in RUNNING_KEYWORDS)
 
 def fetch_weibo_hot():
-    """抓取微博热搜（需 Cookie）"""
+    """抓取微博热搜 - 使用网页版"""
     topics = []
     try:
-        cookie = os.environ.get('WEIBO_COOKIE', '')
-        if not cookie:
-            print("[微博] 未配置 Cookie，尝试无 Cookie 模式")
-            # 无 Cookie 模式：尝试公开接口
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json'
-            }
-            url = 'https://weibo.com/ajax/side/hotSearch'
-            resp = requests.get(url, headers=headers, timeout=10)
-        else:
-            headers = {
-                'Cookie': cookie,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            url = 'https://weibo.com/ajax/side/hotSearch'
-            resp = requests.get(url, headers=headers, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
         
-        print(f"[微博] HTTP 状态: {resp.status_code}")
+        # 微博热搜页面
+        url = 'https://s.weibo.com/top/summary?cate=realtimehot'
+        resp = requests.get(url, headers=headers, timeout=15)
+        
+        print(f"[微博] 状态: {resp.status_code}")
         
         if resp.status_code == 200:
-            try:
-                data = resp.json()
-                realtime = data.get('data', {}).get('realtime', [])
-                print(f"[微博] 获取到 {len(realtime)} 条热搜")
-                
-                for item in realtime[:30]:  # 取前30条
-                    word = item.get('word', '')
-                    if contains_running_keyword(word):
-                        topics.append({
-                            'title': word,
-                            'heat': item.get('raw_hot', item.get('hot', 'N/A')),
-                            'source': '微博热搜',
-                            'url': f"https://s.weibo.com/weibo?q={quote(word)}",
-                            'category': '🔴 新热点',
-                            'timestamp': datetime.now().isoformat()
-                        })
-            except Exception as e:
-                print(f"[微博] JSON解析失败: {e}")
-        else:
-            print(f"[微博] 请求失败: {resp.status_code}")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            # 热搜表格
+            rows = soup.select('#pl_top_realtimehot tbody tr')
+            print(f"[微博] 找到 {len(rows)} 行数据")
             
-        print(f"[微博] 匹配到 {len(topics)} 条跑圈相关热点")
+            for row in rows[1:]:  # 跳过表头
+                try:
+                    td = row.select_one('td:nth-child(2)')
+                    if td:
+                        a = td.select_one('a')
+                        if a:
+                            title = a.get_text(strip=True)
+                            if contains_running_keyword(title):
+                                topics.append({
+                                    'title': title,
+                                    'heat': 'N/A',
+                                    'source': '微博热搜',
+                                    'url': 'https://s.weibo.com' + a.get('href', ''),
+                                    'category': '🔴 新热点',
+                                    'timestamp': datetime.now().isoformat()
+                                })
+                except:
+                    continue
+        
+        print(f"[微博] 匹配到 {len(topics)} 条跑圈热点")
     except Exception as e:
-        print(f"[微博] 抓取失败: {e}")
+        print(f"[微博] 失败: {e}")
     
     return topics
 
 def fetch_zhihu_hot():
-    """抓取知乎热榜（增强版）"""
+    """抓取知乎热榜 - 使用网页版"""
     topics = []
     try:
-        # 尝试多个接口
-        urls = [
-            'https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total',
-            'https://www.zhihu.com/api/v3/feed/topstory/hot-lists/everyone',
-        ]
-        
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Referer': 'https://www.zhihu.com/hot'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html'
         }
         
-        for url in urls:
-            try:
-                resp = requests.get(url, headers=headers, timeout=10)
-                print(f"[知乎] {url.split('/')[-1]} 状态: {resp.status_code}")
-                
-                if resp.status_code == 200:
-                    data = resp.json()
-                    items = data.get('data', [])
-                    print(f"[知乎] 获取到 {len(items)} 条热榜")
-                    
-                    for item in items:
-                        target = item.get('target', {})
-                        title = target.get('title', '') or target.get('question', {}).get('title', '')
-                        
+        url = 'https://www.zhihu.com/hot'
+        resp = requests.get(url, headers=headers, timeout=15)
+        
+        print(f"[知乎] 状态: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            # 知乎热榜数据在 JSON 中
+            # 尝试从页面中提取
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # 寻找热榜标题
+            hot_items = soup.select('.HotList-item, [data-za-detail-view-path-module="HotList"] .HotItem-content')
+            
+            if not hot_items:
+                # 备用选择器
+                hot_items = soup.find_all('div', class_=re.compile('HotItem|hot-item', re.I))
+            
+            print(f"[知乎] 找到 {len(hot_items)} 个热榜项")
+            
+            for item in hot_items[:50]:
+                try:
+                    title_elem = item.select_one('.HotItem-title, h2, .ContentItem-title')
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
                         if contains_running_keyword(title):
+                            link = item.select_one('a')
+                            url = link.get('href', '') if link else ''
+                            if url and not url.startswith('http'):
+                                url = 'https://zhuanlan.zhihu.com' + url
+                            
                             topics.append({
                                 'title': title[:100],
-                                'heat': target.get('metrics', target.get('answer_count', 'N/A')),
+                                'heat': 'N/A',
                                 'source': '知乎热榜',
-                                'url': target.get('url', f"https://zhihu.com/question/{target.get('id', '')}"),
+                                'url': url or 'https://zhihu.com/hot',
                                 'category': '🔴 新热点',
                                 'timestamp': datetime.now().isoformat()
                             })
-                    
-                    if topics:  # 如果抓到了，就不继续尝试其他接口
-                        break
-                        
-            except Exception as e:
-                print(f"[知乎] 接口尝试失败: {e}")
-                continue
+                except:
+                    continue
         
-        print(f"[知乎] 匹配到 {len(topics)} 条跑圈相关热点")
+        print(f"[知乎] 匹配到 {len(topics)} 条跑圈热点")
     except Exception as e:
-        print(f"[知乎] 抓取失败: {e}")
+        print(f"[知乎] 失败: {e}")
     
     return topics
 
 def fetch_baidu_hot():
-    """抓取百度热搜（无需认证）"""
+    """抓取百度热搜 - 使用网页版"""
     topics = []
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html'
         }
         
-        # 百度热搜 API
-        url = 'https://top.baidu.com/api/board?platform=wise&tab=realtime'
-        resp = requests.get(url, headers=headers, timeout=10)
+        url = 'https://top.baidu.com/board?tab=realtime'
+        resp = requests.get(url, headers=headers, timeout=15)
         
-        print(f"[百度] HTTP 状态: {resp.status_code}")
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data.get('data', {}).get('cards', [{}])[0].get('content', [])
-            print(f"[百度] 获取到 {len(items)} 条热搜")
-            
-            for item in items[:30]:
-                title = item.get('word', '')
-                if contains_running_keyword(title):
-                    topics.append({
-                        'title': title,
-                        'heat': item.get('hotScore', 'N/A'),
-                        'source': '百度热搜',
-                        'url': item.get('url', f"https://www.baidu.com/s?wd={quote(title)}"),
-                        'category': '🔴 新热点',
-                        'timestamp': datetime.now().isoformat()
-                    })
-        
-        print(f"[百度] 匹配到 {len(topics)} 条跑圈相关热点")
-    except Exception as e:
-        print(f"[百度] 抓取失败: {e}")
-    
-    return topics
-
-def fetch_douyin_hot():
-    """抓取抖音热点（需 Cookie）"""
-    topics = []
-    try:
-        cookie = os.environ.get('DOUYIN_COOKIE', '')
-        if not cookie:
-            print("[抖音] 未配置 Cookie，跳过")
-            return topics
-        
-        headers = {
-            'Cookie': cookie,
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15',
-            'Referer': 'https://www.douyin.com/'
-        }
-        
-        url = 'https://www.douyin.com/aweme/v1/web/hot/search/list/'
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        print(f"[抖音] HTTP 状态: {resp.status_code}")
+        print(f"[百度] 状态: {resp.status_code}")
         
         if resp.status_code == 200:
-            data = resp.json()
-            items = data.get('data', {}).get('word_list', [])
-            print(f"[抖音] 获取到 {len(items)} 条热点")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # 百度热榜项
+            items = soup.select('.category-wrap_iQLoo, .content_1YWBm')
+            print(f"[百度] 找到 {len(items)} 个热榜项")
             
             for item in items[:30]:
-                word = item.get('word', '')
-                if contains_running_keyword(word):
-                    topics.append({
-                        'title': word,
-                        'heat': item.get('hot_value', 'N/A'),
-                        'source': '抖音热点',
-                        'url': f"https://www.douyin.com/search/{quote(word)}",
-                        'category': '🔴 新热点',
-                        'timestamp': datetime.now().isoformat()
-                    })
+                try:
+                    title_elem = item.select_one('.c-single-text-ellipsis, .content-title')
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+                        if contains_running_keyword(title):
+                            link_elem = item.select_one('a[href]')
+                            url = link_elem.get('href', '') if link_elem else ''
+                            
+                            topics.append({
+                                'title': title,
+                                'heat': 'N/A',
+                                'source': '百度热搜',
+                                'url': url or 'https://top.baidu.com',
+                                'category': '🔴 新热点',
+                                'timestamp': datetime.now().isoformat()
+                            })
+                except:
+                    continue
         
-        print(f"[抖音] 匹配到 {len(topics)} 条跑圈相关热点")
+        print(f"[百度] 匹配到 {len(topics)} 条跑圈热点")
     except Exception as e:
-        print(f"[抖音] 抓取失败: {e}")
-    
-    return topics
-
-def fetch_xiaohongshu_hot():
-    """抓取小红书热点（简化版）"""
-    topics = []
-    try:
-        cookie = os.environ.get('XIAOHONGSHU_COOKIE', '')
-        if not cookie:
-            print("[小红书] 未配置 Cookie，跳过")
-            return topics
-        
-        # 小红书抓取较复杂，需要特定签名
-        # 这里使用简化方案：直接返回空，等待后续优化
-        print("[小红书] Cookie 已配置，但抓取需要额外签名验证，暂跳过")
-        
-    except Exception as e:
-        print(f"[小红书] 抓取失败: {e}")
+        print(f"[百度] 失败: {e}")
     
     return topics
 
 def fetch_toutiao_hot():
-    """抓取今日头条热点（无需认证）"""
+    """抓取今日头条热点"""
     topics = []
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
         
-        # 头条热搜
+        # 头条热榜 JSON 接口
         url = 'https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc'
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=15)
         
-        print(f"[头条] HTTP 状态: {resp.status_code}")
+        print(f"[头条] 状态: {resp.status_code}")
         
         if resp.status_code == 200:
-            # 头条返回 HTML，需要解析
-            # 简化处理：如果包含跑步关键词的标题在页面中
-            html = resp.text
-            # 这里简化处理，实际需要更复杂的解析
-            pass
+            # 从HTML中提取初始数据
+            match = re.search(r'window\._SSR_HYDRATED_DATA\s*=\s*({.*?})<', resp.text)
+            if match:
+                data = json.loads(match.group(1))
+                items = data.get('InitialState', {}).get('hotEvent', {}).get('data', [])
+                
+                print(f"[头条] 找到 {len(items)} 个热榜项")
+                
+                for item in items[:30]:
+                    try:
+                        title = item.get('Title', '')
+                        if contains_running_keyword(title):
+                            url = item.get('Url', '')
+                            topics.append({
+                                'title': title,
+                                'heat': item.get('HotValue', 'N/A'),
+                                'source': '今日头条',
+                                'url': url or 'https://toutiao.com',
+                                'category': '🔴 新热点',
+                                'timestamp': datetime.now().isoformat()
+                            })
+                    except:
+                        continue
         
-        print(f"[头条] 匹配到 {len(topics)} 条跑圈相关热点")
+        print(f"[头条] 匹配到 {len(topics)} 条跑圈热点")
     except Exception as e:
-        print(f"[头条] 抓取失败: {e}")
+        print(f"[头条] 失败: {e}")
     
     return topics
 
-def fetch_runhub_news():
-    """抓取跑圈垂直媒体"""
+def fetch_36kr_running():
+    """抓取36氪等科技媒体的体育/跑步相关内容"""
     topics = []
     try:
-        # 尝试抓取一些公开的跑步资讯网站
-        sources = [
-            {'name': '跑野大爆炸', 'url': 'https://www.runyeyo.com/', 'selector': 'article h2'},
-            {'name': '爱燃烧', 'url': 'https://iranshao.com/', 'selector': '.article-title'},
-        ]
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        for source in sources:
-            try:
-                resp = requests.get(source['url'], headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    titles = soup.select(source['selector'])
-                    
-                    for title_elem in titles[:5]:
-                        title = title_elem.get_text(strip=True)
-                        if contains_running_keyword(title) and len(title) > 5:
-                            topics.append({
-                                'title': title[:80],
-                                'heat': 'N/A',
-                                'source': source['name'],
-                                'url': source['url'],
-                                'category': '🟡 发酵热点',
-                                'timestamp': datetime.now().isoformat()
-                            })
-            except:
-                continue
-        
-        print(f"[跑圈媒体] 抓取到 {len(topics)} 条新闻")
+        # 这里可以添加更多科技媒体的RSS或API
+        pass
     except Exception as e:
-        print(f"[跑圈媒体] 抓取失败: {e}")
+        print(f"[36氪] 失败: {e}")
     
     return topics
 
@@ -308,7 +242,6 @@ def generate_report(topics):
     """生成 Markdown 报告"""
     date_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 按来源分类统计
     source_count = {}
     for t in topics:
         src = t.get('source', '未知')
@@ -318,7 +251,7 @@ def generate_report(topics):
 
 ## 监控概览
 - 生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M")}
-- 数据来源：微博、知乎、百度、抖音、跑圈媒体
+- 数据来源：微博、知乎、百度、头条
 - 总计热点：{len(topics)} 条
 
 ## 来源统计
@@ -330,12 +263,13 @@ def generate_report(topics):
     
     if not topics:
         report += "*今日暂无跑圈相关热点*\n\n"
-        report += "可能原因：\n"
-        report += "- 今日确实没有跑圈热点\n"
-        report += "- Cookie 配置需要更新\n"
-        report += "- 某些平台反爬升级\n"
+        report += "---\n\n"
+        report += "**可能原因：**\n"
+        report += "1. 今日确实没有跑圈热点\n"
+        report += "2. 各平台反爬升级，抓取受限\n"
+        report += "3. 建议：通过浏览器手动查看热点\n"
     else:
-        for i, topic in enumerate(topics[:20], 1):  # 最多显示20条
+        for i, topic in enumerate(topics[:20], 1):
             report += f"**{i}. {topic.get('title', '未知')}**\n"
             report += f"- 热度：{topic.get('heat', 'N/A')}\n"
             report += f"- 来源：{topic.get('source', 'N/A')}\n"
@@ -345,43 +279,38 @@ def generate_report(topics):
 
 def main():
     print("=" * 60)
-    print("🏃 跑圈热点监控启动")
-    print(f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("🏃 跑圈热点监控 V3.0")
+    print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
-    # 创建输出目录
     os.makedirs("hot-topics", exist_ok=True)
     
-    # 抓取数据
     all_topics = []
     
     fetchers = [
-        ("微博", fetch_weibo_hot),
-        ("知乎", fetch_zhihu_hot),
-        ("百度", fetch_baidu_hot),
-        ("抖音", fetch_douyin_hot),
-        ("小红书", fetch_xiaohongshu_hot),
-        ("头条", fetch_toutiao_hot),
-        ("跑圈媒体", fetch_runhub_news),
+        ("微博热搜", fetch_weibo_hot),
+        ("知乎热榜", fetch_zhihu_hot),
+        ("百度热搜", fetch_baidu_hot),
+        ("今日头条", fetch_toutiao_hot),
     ]
     
     for name, fetcher in fetchers:
-        print(f"\n📡 正在抓取 [{name}]...")
+        print(f"\n📡 [{name}] 开始抓取...")
         try:
             topics = fetcher()
             all_topics.extend(topics)
-            time.sleep(1)  #  polite delay
+            time.sleep(2)  # 防止请求过快
         except Exception as e:
             print(f"[{name}] 异常: {e}")
     
     print("\n" + "=" * 60)
     
-    # 去重（基于标题）
+    # 去重
     seen = set()
     unique_topics = []
     for t in all_topics:
         title = t.get('title', '')
-        if title and title not in seen:
+        if title and title not in seen and len(title) > 3:
             seen.add(title)
             unique_topics.append(t)
     
@@ -391,53 +320,48 @@ def main():
     date_str = datetime.now().strftime("%Y-%m-%d")
     report = generate_report(unique_topics)
     
-    # 保存 Markdown
     md_path = f"hot-topics/{date_str}.md"
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(report)
     
-    # 保存 JSON
     json_path = f"hot-topics/{date_str}.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(unique_topics, f, ensure_ascii=False, indent=2)
     
-    print(f"✅ 报告已保存: {md_path}")
-    print(f"✅ JSON 已保存: {json_path}")
+    print(f"✅ 报告: {md_path}")
+    print(f"✅ JSON: {json_path}")
     
     # 飞书推送
     feishu_webhook = os.environ.get('FEISHU_WEBHOOK', '')
     
     if feishu_webhook:
-        print(f"\n📤 正在推送飞书...")
+        print(f"\n📤 推送飞书...")
         try:
             if unique_topics:
-                summary = f"🏃 今日跑圈热点：共 {len(unique_topics)} 条\n\n"
-                summary += "\n".join([f"{i+1}. {t['title'][:30]}..." if len(t['title']) > 30 else f"{i+1}. {t['title']}" 
-                                     for i, t in enumerate(unique_topics[:8])])
+                summary = f"🏃 今日跑圈热点：{len(unique_topics)} 条\n"
+                for i, t in enumerate(unique_topics[:8], 1):
+                    title = t['title'][:25] + "..." if len(t['title']) > 25 else t['title']
+                    summary += f"\n{i}. {title}"
             else:
-                summary = "🏃 今日跑圈热点监控\n\n暂无新的跑圈热点\n\n建议：检查 Cookie 配置或稍后再试"
+                summary = "🏃 今日跑圈监控\n\n暂无热点，建议手动查看"
             
             resp = requests.post(feishu_webhook, json={
                 "msg_type": "text",
                 "content": {"text": summary}
             }, timeout=10)
             
-            if resp.status_code == 200:
-                result = resp.json()
-                if result.get('code') == 0:
-                    print("✅ 飞书推送成功")
-                else:
-                    print(f"⚠️ 飞书返回错误: {result}")
+            if resp.status_code == 200 and resp.json().get('code') == 0:
+                print("✅ 飞书推送成功")
             else:
-                print(f"⚠️ 飞书 HTTP 错误: {resp.status_code}")
+                print(f"⚠️ 飞书推送失败: {resp.status_code}")
                 
         except Exception as e:
             print(f"⚠️ 飞书推送失败: {e}")
     else:
-        print("\n⏭️ 未配置 FEISHU_WEBHOOK，跳过推送")
+        print("\n⏭️ 未配置 FEISHU_WEBHOOK")
     
     print("\n" + "=" * 60)
-    print("🏁 监控完成")
+    print("🏁 完成")
     print("=" * 60)
 
 if __name__ == "__main__":
