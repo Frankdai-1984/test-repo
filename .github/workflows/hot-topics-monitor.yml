@@ -32,9 +32,12 @@ jobs:
         python scripts/hot_topics_monitor.py
     
     - name: 提交更新
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
+        git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
         git add hot-topics/
         if ! git diff --staged --quiet; then
           git commit -m "Update hot topics - $(date +%Y-%m-%d)"
