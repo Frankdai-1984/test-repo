@@ -33,6 +33,8 @@ jobs:
         FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       run: |
         python scripts/hot_topics_monitor.py
+        ls -la hot-topics/ || echo "目录不存在"
+        cat hot-topics/*.md 2>/dev/null || echo "没有 markdown 文件"
     
     - name: 提交更新
       uses: stefanzweifel/git-auto-commit-action@v5
@@ -40,3 +42,7 @@ jobs:
         commit_message: "Update hot topics - $(date +%Y-%m-%d)"
         file_pattern: 'hot-topics/*'
         commit_author: 'GitHub Action <action@github.com>'
+        commit_user_name: 'GitHub Action'
+        commit_user_email: 'action@github.com'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
